@@ -8,13 +8,113 @@ import { isSupabaseConfigured, supabase } from './supabase'
 const SUPABASE_MISSING_MSG =
   'Supabase 환경변수가 없습니다. .env에 VITE_SUPABASE_URL과 VITE_SUPABASE_PUBLISHABLE_KEY를 넣고 npm run dev를 다시 실행하세요.'
 
+const OAUTH_PENDING_KEY = 'saju_oauth_pending'
+
 const GENDER_LABEL = { male: '남성', female: '여성' }
 const CALENDAR_LABEL = { solar: '양력', lunar: '음력' }
 
-function formatBirthMeta({ birthDate, birthTime, gender, calendarType }) {
+function composeBirthDate(year, month, day) {
+  const y = String(year || '').trim()
+  const m = String(month || '').trim()
+  const d = String(day || '').trim()
+  if (y.length !== 4 || !m || !d) return ''
+
+  const mm = m.padStart(2, '0')
+  const dd = d.padStart(2, '0')
+  const composed = `${y}-${mm}-${dd}`
+  const date = new Date(`${composed}T00:00:00`)
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== Number(y) ||
+    date.getMonth() + 1 !== Number(mm) ||
+    date.getDate() !== Number(dd)
+  ) {
+    return ''
+  }
+  return composed
+}
+
+function splitBirthDate(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return { year: '', month: '', day: '' }
+  }
+  const [year, month, day] = value.split('-')
+  return {
+    year,
+    month: String(Number(month)),
+    day: String(Number(day)),
+  }
+}
+
+function digitsOnly(value, maxLength) {
+  return String(value || '')
+    .replace(/\D/g, '')
+    .slice(0, maxLength)
+}
+
+function readOAuthErrorFromUrl() {
+  const search = new URLSearchParams(window.location.search)
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const error =
+    search.get('error') ||
+    search.get('error_code') ||
+    hash.get('error') ||
+    hash.get('error_code')
+  if (!error) return ''
+
+  const description =
+    search.get('error_description') || hash.get('error_description') || ''
+  return decodeURIComponent((description || error).replace(/\+/g, ' '))
+}
+
+function clearAuthParamsFromUrl() {
+  const url = new URL(window.location.href)
+  const keys = [
+    'error',
+    'error_code',
+    'error_description',
+    'code',
+    'state',
+  ]
+  let changed = false
+  for (const key of keys) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key)
+      changed = true
+    }
+  }
+  if (url.hash && /error|code|state/.test(url.hash)) {
+    url.hash = ''
+    changed = true
+  }
+  if (changed) {
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}`)
+  }
+}
+
+function formatAuthError(message) {
+  const text = String(message || '')
+  if (!text) return '로그인 중 오류가 발생했습니다.'
+  if (/redirect_uri_mismatch/i.test(text)) {
+    return 'Google OAuth Redirect URI가 맞지 않습니다. Google Cloud에 Supabase callback URL을 등록했는지 확인하세요.'
+  }
+  if (/oauth.*state|state parameter/i.test(text)) {
+    return '로그인 세션이 만료되었거나 중단되었습니다. Google 로그인을 다시 시도해 주세요.'
+  }
+  if (/provider is not enabled|unsupported provider/i.test(text)) {
+    return 'Supabase에서 Google provider가 아직 활성화되지 않았습니다.'
+  }
+  if (/access_denied/i.test(text)) {
+    return 'Google 로그인이 취소되었습니다.'
+  }
+  return text
+}
+
+function formatBirthMeta({ birthDate, birthTime, birthTimeUnknown, gender, calendarType }) {
   const parts = []
   if (birthDate) parts.push(birthDate.replaceAll('-', '.'))
-  if (birthTime) parts.push(birthTime.slice(0, 5))
+  if (birthTimeUnknown) parts.push('시간 모름')
+  else if (birthTime) parts.push(birthTime.slice(0, 5))
   if (gender) parts.push(GENDER_LABEL[gender] || gender)
   if (calendarType) parts.push(CALENDAR_LABEL[calendarType] || calendarType)
   return parts
@@ -57,15 +157,21 @@ function ResultSkeleton() {
 
 function App() {
   const [name, setName] = useState('')
-  const [birthDate, setBirthDate] = useState('')
+  const [birthYear, setBirthYear] = useState('')
+  const [birthMonth, setBirthMonth] = useState('')
+  const [birthDay, setBirthDay] = useState('')
   const [birthTime, setBirthTime] = useState('')
-  const [gender, setGender] = useState('')
+  const [birthTimeUnknown, setBirthTimeUnknown] = useState(false)
+  const [gender, setGender] = useState('male')
   const [calendarType, setCalendarType] = useState('solar')
 
+  const [user, setUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [authBusy, setAuthBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [readingLoading, setReadingLoading] = useState(false)
-  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
@@ -78,22 +184,32 @@ function App() {
 
   const resultRef = useRef(null)
   const formRef = useRef(null)
+  const birthMonthRef = useRef(null)
+  const birthDayRef = useRef(null)
   const scrolledRef = useRef(false)
   const toastTimerRef = useRef(null)
   const copyTimerRef = useRef(null)
   const snapshotRef = useRef(null)
+  const prevUserIdRef = useRef(undefined)
 
-  const busy = loading || saving || readingLoading
+  const birthDate = composeBirthDate(birthYear, birthMonth, birthDay)
+  const busy = loading || saving || readingLoading || authBusy
   const isSavedView = Boolean(activeReadingId) && !loading && !saving
   const isLocked = isSavedView && !editMode
   const showResultPanel = loading || readingLoading || Boolean(result)
   const metaChips = formatBirthMeta({
     birthDate,
     birthTime,
+    birthTimeUnknown,
     gender,
     calendarType,
   })
-  const filledCount = [name, birthDate, birthTime, gender].filter(Boolean).length
+  const userLabel =
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.email ||
+    '로그인됨'
+  const userAvatar = user?.user_metadata?.avatar_url || user?.user_metadata?.picture
 
   const requireSupabase = () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -108,13 +224,45 @@ function App() {
     toastTimerRef.current = setTimeout(() => setToast(''), 2600)
   }
 
+  const applyBirthDateParts = (value) => {
+    const parts = splitBirthDate(value)
+    setBirthYear(parts.year)
+    setBirthMonth(parts.month)
+    setBirthDay(parts.day)
+  }
+
   const applyReadingToForm = (data) => {
+    const timeValue = (data.birth_time || '').slice(0, 5)
+    const unknownTime = !timeValue
     setName(data.name ?? '')
-    setBirthDate(data.birth_date ?? '')
-    setBirthTime((data.birth_time || '').slice(0, 5))
-    setGender(data.gender ?? '')
+    applyBirthDateParts(data.birth_date ?? '')
+    setBirthTime(timeValue)
+    setBirthTimeUnknown(unknownTime)
+    setGender(data.gender ?? 'male')
     setCalendarType(data.calendar_type ?? 'solar')
     setResult(data.result ?? '')
+  }
+
+  const resetWorkspace = () => {
+    setName('')
+    setBirthYear('')
+    setBirthMonth('')
+    setBirthDay('')
+    setBirthTime('')
+    setBirthTimeUnknown(false)
+    setGender('male')
+    setCalendarType('solar')
+    setLoading(false)
+    setSaving(false)
+    setReadingLoading(false)
+    setResult('')
+    setFieldErrors({})
+    setActiveReadingId(null)
+    setEditMode(false)
+    setCopyState('idle')
+    snapshotRef.current = null
+    setResultRevealKey((key) => key + 1)
+    scrolledRef.current = false
   }
 
   const loadReadings = async () => {
@@ -130,21 +278,138 @@ function App() {
       setReadings(data ?? [])
     } catch (err) {
       console.error(err)
-      if (String(err.message || '').includes('Supabase 환경변수')) {
-        setError(err.message)
-      }
+      setError(err.message || '저장된 사주 목록을 불러오지 못했습니다.')
     } finally {
       setHistoryLoading(false)
     }
   }
 
   useEffect(() => {
-    loadReadings()
+    let cancelled = false
+    let subscription = null
+
+    const bootAuth = async () => {
+      if (!isSupabaseConfigured || !supabase) {
+        setAuthLoading(false)
+        setError(SUPABASE_MISSING_MSG)
+        return
+      }
+
+      const oauthError = readOAuthErrorFromUrl()
+      if (oauthError) {
+        sessionStorage.removeItem(OAUTH_PENDING_KEY)
+        setError(formatAuthError(oauthError))
+        clearAuthParamsFromUrl()
+      }
+
+      try {
+        const { data, error: sessionError } = await supabase.auth.getSession()
+        if (sessionError) throw sessionError
+        if (!cancelled) {
+          setUser(data.session?.user ?? null)
+          if (data.session?.user && !oauthError) {
+            clearAuthParamsFromUrl()
+          }
+        }
+      } catch (err) {
+        console.error(err)
+        if (!cancelled) {
+          setUser(null)
+          setError(formatAuthError(err.message || '로그인 상태를 확인하지 못했습니다.'))
+        }
+      } finally {
+        if (!cancelled) setAuthLoading(false)
+      }
+
+      const { data: listener } = supabase.auth.onAuthStateChange(
+        (event, session) => {
+          if (cancelled) return
+          setUser(session?.user ?? null)
+          setAuthLoading(false)
+
+          if (event === 'SIGNED_IN' && session?.user) {
+            clearAuthParamsFromUrl()
+          }
+        },
+      )
+      subscription = listener.subscription
+    }
+
+    bootAuth()
+
     return () => {
+      cancelled = true
+      subscription?.unsubscribe()
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (authLoading) return
+
+    const prevUserId = prevUserIdRef.current
+    const nextUserId = user?.id ?? null
+    prevUserIdRef.current = nextUserId
+
+    if (!user) {
+      setReadings([])
+      setHistoryLoading(false)
+      if (prevUserId) {
+        resetWorkspace()
+      }
+      return
+    }
+
+    loadReadings()
+
+    if (sessionStorage.getItem(OAUTH_PENDING_KEY) === '1') {
+      sessionStorage.removeItem(OAUTH_PENDING_KEY)
+      showToast('Google 로그인 완료')
+    }
+  }, [user, authLoading])
+
+  const handleGoogleSignIn = async () => {
+    setError('')
+    setAuthBusy(true)
+    try {
+      const client = requireSupabase()
+      sessionStorage.setItem(OAUTH_PENDING_KEY, '1')
+      const { error: signInError } = await client.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          scopes: 'openid email profile',
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      })
+      if (signInError) throw signInError
+    } catch (err) {
+      console.error(err)
+      sessionStorage.removeItem(OAUTH_PENDING_KEY)
+      setError(formatAuthError(err.message || 'Google 로그인에 실패했습니다.'))
+      setAuthBusy(false)
+    }
+  }
+
+  const handleSignOut = async () => {
+    setError('')
+    setAuthBusy(true)
+    try {
+      const client = requireSupabase()
+      sessionStorage.removeItem(OAUTH_PENDING_KEY)
+      const { error: signOutError } = await client.auth.signOut()
+      if (signOutError) throw signOutError
+      showToast('로그아웃했어요')
+    } catch (err) {
+      console.error(err)
+      setError(formatAuthError(err.message || '로그아웃에 실패했습니다.'))
+    } finally {
+      setAuthBusy(false)
+    }
+  }
 
   useEffect(() => {
     if ((loading || result) && resultRef.current && !scrolledRef.current) {
@@ -209,23 +474,8 @@ function App() {
   const handleNewReading = ({ skipBusyCheck = false } = {}) => {
     if (!skipBusyCheck && busy) return
 
-    setName('')
-    setBirthDate('')
-    setBirthTime('')
-    setGender('')
-    setCalendarType('solar')
-    setLoading(false)
-    setSaving(false)
-    setReadingLoading(false)
-    setResult('')
     setError('')
-    setFieldErrors({})
-    setActiveReadingId(null)
-    setEditMode(false)
-    setCopyState('idle')
-    snapshotRef.current = null
-    setResultRevealKey((key) => key + 1)
-    scrolledRef.current = false
+    resetWorkspace()
 
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -258,11 +508,13 @@ function App() {
       if (fetchError) throw fetchError
 
       applyReadingToForm(data)
+      const timeValue = (data.birth_time || '').slice(0, 5)
       snapshotRef.current = {
         name: data.name ?? '',
         birthDate: data.birth_date ?? '',
-        birthTime: (data.birth_time || '').slice(0, 5),
-        gender: data.gender ?? '',
+        birthTime: timeValue,
+        birthTimeUnknown: !timeValue,
+        gender: data.gender ?? 'male',
         calendarType: data.calendar_type ?? 'solar',
         result: data.result ?? '',
       }
@@ -286,6 +538,7 @@ function App() {
       name,
       birthDate,
       birthTime,
+      birthTimeUnknown,
       gender,
       calendarType,
       result,
@@ -303,8 +556,9 @@ function App() {
     const snapshot = snapshotRef.current
     if (snapshot) {
       setName(snapshot.name)
-      setBirthDate(snapshot.birthDate)
+      applyBirthDateParts(snapshot.birthDate)
       setBirthTime(snapshot.birthTime)
+      setBirthTimeUnknown(Boolean(snapshot.birthTimeUnknown))
       setGender(snapshot.gender)
       setCalendarType(snapshot.calendarType)
       setResult(snapshot.result)
@@ -317,9 +571,10 @@ function App() {
   const validateForm = () => {
     const nextErrors = {
       name: !name.trim(),
-      birthDate: !birthDate,
-      birthTime: !birthTime,
       gender: !gender,
+      birthDate: !birthDate,
+      birthTime: !birthTimeUnknown && !birthTime,
+      calendarType: !calendarType,
     }
     setFieldErrors(nextErrors)
     return !Object.values(nextErrors).some(Boolean)
@@ -328,7 +583,7 @@ function App() {
   const buildPayload = (resultText) => ({
     name: name.trim(),
     birth_date: birthDate,
-    birth_time: birthTime,
+    birth_time: birthTimeUnknown ? null : birthTime,
     gender,
     calendar_type: calendarType,
     result: resultText,
@@ -338,8 +593,13 @@ function App() {
     if (!activeReadingId || busy) return
     setError('')
 
+    if (!user) {
+      setError('Google로 로그인한 뒤 저장할 수 있어요.')
+      return
+    }
+
     if (!validateForm()) {
-      setError('이름, 생년월일, 태어난 시간, 성별을 모두 입력해 주세요.')
+      setError('이름, 성별, 생년월일, 태어난 시간(또는 시간 모름), 달력을 모두 입력해 주세요.')
       return
     }
 
@@ -350,6 +610,7 @@ function App() {
         name: name.trim(),
         birthDate,
         birthTime,
+        birthTimeUnknown,
         gender,
         calendarType,
         result,
@@ -387,8 +648,13 @@ function App() {
     setCopyState('idle')
     scrolledRef.current = false
 
+    if (!user) {
+      setError('Google로 로그인한 뒤 사주를 해석·저장할 수 있어요.')
+      return
+    }
+
     if (!validateForm()) {
-      setError('이름, 생년월일, 태어난 시간, 성별을 모두 입력해 주세요.')
+      setError('이름, 성별, 생년월일, 태어난 시간(또는 시간 모름), 달력을 모두 입력해 주세요.')
       return
     }
 
@@ -403,7 +669,7 @@ function App() {
       const prompt = buildSajuPrompt({
         name: name.trim(),
         birthDate,
-        birthTime,
+        birthTime: birthTimeUnknown ? '' : birthTime,
         gender,
         calendarType,
       })
@@ -435,6 +701,7 @@ function App() {
         name: name.trim(),
         birthDate,
         birthTime,
+        birthTimeUnknown,
         gender,
         calendarType,
         result: text,
@@ -490,20 +757,77 @@ function App() {
         : '저장 중…'
       : editMode
         ? '변경 저장'
-        : '내 사주 보기'
+        : '사주 보기'
 
   return (
     <div className="layout">
       <aside className="sidebar" aria-labelledby="sidebar-title">
+        <div className="sidebar-auth">
+          {authLoading ? (
+            <p className="sidebar-auth-status">로그인 확인 중…</p>
+          ) : user ? (
+            <div className="sidebar-user">
+              {userAvatar ? (
+                <img
+                  className="sidebar-avatar"
+                  src={userAvatar}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="sidebar-avatar is-fallback" aria-hidden="true">
+                  {(userLabel || '?').slice(0, 1)}
+                </span>
+              )}
+              <div className="sidebar-user-copy">
+                <p className="sidebar-user-name">{userLabel}</p>
+                {user.email && userLabel !== user.email ? (
+                  <p className="sidebar-user-email">{user.email}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="sidebar-signout"
+                onClick={handleSignOut}
+                disabled={authBusy}
+              >
+                로그아웃
+              </button>
+            </div>
+          ) : (
+            <div className="sidebar-auth-guest">
+              <p className="sidebar-auth-copy">
+                Google로 로그인하면 내 사주 기록이 저장돼요.
+              </p>
+              <button
+                type="button"
+                className="google-signin"
+                onClick={handleGoogleSignIn}
+                disabled={authBusy || !isSupabaseConfigured}
+              >
+                <span className="google-signin-icon" aria-hidden="true">
+                  G
+                </span>
+                Google로 계속하기
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="sidebar-head">
           <div className="sidebar-head-row">
             <p className="sidebar-kicker">HISTORY</p>
-            <span className="sidebar-count">{readings.length}</span>
+            <span className="sidebar-count">{user ? readings.length : 0}</span>
           </div>
           <h2 id="sidebar-title">저장된 사주</h2>
         </div>
 
-        {historyLoading ? (
+        {!user ? (
+          <p className="sidebar-empty">
+            로그인 후 기록이 보여요.
+            <span>왼쪽에서 Google 로그인을 시작해 주세요.</span>
+          </p>
+        ) : historyLoading ? (
           <div className="sidebar-loading" aria-hidden="true">
             <div className="sidebar-loading-line" />
             <div className="sidebar-loading-line short" />
@@ -552,7 +876,7 @@ function App() {
           type="button"
           className="sidebar-new"
           onClick={() => handleNewReading()}
-          disabled={busy}
+          disabled={busy || !user}
         >
           새 사주 만들기
         </button>
@@ -563,6 +887,16 @@ function App() {
           <div className="hero-top">
             <span className="badge">SAJU ME</span>
             <span className="badge-dot" aria-hidden="true" />
+            {!authLoading && !user ? (
+              <button
+                type="button"
+                className="hero-signin"
+                onClick={handleGoogleSignIn}
+                disabled={authBusy || !isSupabaseConfigured}
+              >
+                Google 로그인
+              </button>
+            ) : null}
           </div>
           <p className="brand">사주미</p>
           <h1 className="headline">
@@ -570,7 +904,25 @@ function App() {
             <br />
             <span className="headline-accent">더 선명하게</span>
           </h1>
-          <p className="lede">생년월일만 넣으면, AI가 성격·기질·재능을 바로 읽어드려요.</p>
+          <p className="lede">
+            {user ? (
+              <>
+                <span className="lede-line">
+                  생년월일만 넣으면, AI가 성격·기질·재능을
+                </span>
+                <br />
+                바로 읽어드려요.
+              </>
+            ) : (
+              <>
+                <span className="lede-line">
+                  Google로 로그인한 뒤, 생년월일만 넣으면 AI가 성격·기질·재능을
+                </span>
+                <br />
+                읽어드려요.
+              </>
+            )}
+          </p>
         </header>
 
         <main className="main">
@@ -585,7 +937,9 @@ function App() {
                     ? '입력 정보를 수정한 뒤 변경을 저장하세요.'
                     : isSavedView
                       ? '저장된 사주를 보고 있어요. 수정·삭제·다시 해석이 가능해요.'
-                      : `기본 정보 ${filledCount}/4 · 입력하면 해석이 시작돼요.`}
+                      : user
+                        ? '기본 정보를 입력하면 해석이 시작돼요.'
+                        : 'Google로 로그인하면 해석과 저장이 시작돼요.'}
                 </p>
               </div>
               {(activeReadingId || result || name) && (
@@ -646,17 +1000,14 @@ function App() {
               </div>
             )}
 
-            {!isLocked && (
-              <div
-                className="progress"
-                aria-hidden="true"
-                style={{ '--progress': `${(filledCount / 4) * 100}%` }}
-              />
-            )}
-
             <form className="form" onSubmit={handleSubmit}>
               <div className={`field ${fieldErrors.name ? 'has-error' : ''}`}>
-                <label htmlFor="name">이름</label>
+                <label htmlFor="name">
+                  <span className="field-emoji" aria-hidden="true">
+                    👤
+                  </span>
+                  이름
+                </label>
                 <input
                   id="name"
                   type="text"
@@ -673,45 +1024,16 @@ function App() {
                 />
               </div>
 
-              <div className="row">
-                <div className={`field ${fieldErrors.birthDate ? 'has-error' : ''}`}>
-                  <label htmlFor="birthDate">생년월일</label>
-                  <input
-                    id="birthDate"
-                    type="date"
-                    value={birthDate}
-                    onChange={(e) => {
-                      setBirthDate(e.target.value)
-                      if (fieldErrors.birthDate) {
-                        setFieldErrors((prev) => ({ ...prev, birthDate: false }))
-                      }
-                    }}
-                    disabled={isLocked || busy}
-                  />
-                </div>
-
-                <div className={`field ${fieldErrors.birthTime ? 'has-error' : ''}`}>
-                  <label htmlFor="birthTime">태어난 시간</label>
-                  <input
-                    id="birthTime"
-                    type="time"
-                    value={birthTime}
-                    onChange={(e) => {
-                      setBirthTime(e.target.value)
-                      if (fieldErrors.birthTime) {
-                        setFieldErrors((prev) => ({ ...prev, birthTime: false }))
-                      }
-                    }}
-                    disabled={isLocked || busy}
-                  />
-                </div>
-              </div>
-
               <fieldset
                 className={`field choice ${fieldErrors.gender ? 'has-error' : ''}`}
                 disabled={isLocked || busy}
               >
-                <legend>성별</legend>
+                <legend>
+                  <span className="field-emoji" aria-hidden="true">
+                    ⚧
+                  </span>
+                  성별
+                </legend>
                 <div className="choice-group" role="presentation">
                   <label className={gender === 'male' ? 'chip is-on' : 'chip'}>
                     <input
@@ -746,8 +1068,16 @@ function App() {
                 </div>
               </fieldset>
 
-              <fieldset className="field choice" disabled={isLocked || busy}>
-                <legend>달력</legend>
+              <fieldset
+                className={`field choice ${fieldErrors.calendarType ? 'has-error' : ''}`}
+                disabled={isLocked || busy}
+              >
+                <legend>
+                  <span className="field-emoji" aria-hidden="true">
+                    📆
+                  </span>
+                  달력
+                </legend>
                 <div className="choice-group" role="presentation">
                   <label className={calendarType === 'solar' ? 'chip is-on' : 'chip'}>
                     <input
@@ -755,7 +1085,12 @@ function App() {
                       name="calendarType"
                       value="solar"
                       checked={calendarType === 'solar'}
-                      onChange={(e) => setCalendarType(e.target.value)}
+                      onChange={(e) => {
+                        setCalendarType(e.target.value)
+                        if (fieldErrors.calendarType) {
+                          setFieldErrors((prev) => ({ ...prev, calendarType: false }))
+                        }
+                      }}
                     />
                     양력
                   </label>
@@ -765,12 +1100,125 @@ function App() {
                       name="calendarType"
                       value="lunar"
                       checked={calendarType === 'lunar'}
-                      onChange={(e) => setCalendarType(e.target.value)}
+                      onChange={(e) => {
+                        setCalendarType(e.target.value)
+                        if (fieldErrors.calendarType) {
+                          setFieldErrors((prev) => ({ ...prev, calendarType: false }))
+                        }
+                      }}
                     />
                     음력
                   </label>
                 </div>
               </fieldset>
+
+              <div className={`field ${fieldErrors.birthDate ? 'has-error' : ''}`}>
+                <label htmlFor="birthYear">
+                  <span className="field-emoji" aria-hidden="true">
+                    🎂
+                  </span>
+                  생년월일 (YYYY / MM / DD)
+                </label>
+                <div className="date-parts">
+                  <input
+                    id="birthYear"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="bday-year"
+                    placeholder="YYYY"
+                    value={birthYear}
+                    maxLength={4}
+                    onChange={(e) => {
+                      const next = digitsOnly(e.target.value, 4)
+                      setBirthYear(next)
+                      if (fieldErrors.birthDate) {
+                        setFieldErrors((prev) => ({ ...prev, birthDate: false }))
+                      }
+                      if (next.length === 4) birthMonthRef.current?.focus()
+                    }}
+                    disabled={isLocked || busy}
+                  />
+                  <input
+                    id="birthMonth"
+                    ref={birthMonthRef}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="bday-month"
+                    placeholder="월"
+                    value={birthMonth}
+                    maxLength={2}
+                    onChange={(e) => {
+                      const next = digitsOnly(e.target.value, 2)
+                      setBirthMonth(next)
+                      if (fieldErrors.birthDate) {
+                        setFieldErrors((prev) => ({ ...prev, birthDate: false }))
+                      }
+                      if (next.length === 2) birthDayRef.current?.focus()
+                    }}
+                    disabled={isLocked || busy}
+                  />
+                  <input
+                    id="birthDay"
+                    ref={birthDayRef}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="bday-day"
+                    placeholder="일"
+                    value={birthDay}
+                    maxLength={2}
+                    onChange={(e) => {
+                      const next = digitsOnly(e.target.value, 2)
+                      setBirthDay(next)
+                      if (fieldErrors.birthDate) {
+                        setFieldErrors((prev) => ({ ...prev, birthDate: false }))
+                      }
+                    }}
+                    disabled={isLocked || busy}
+                  />
+                </div>
+              </div>
+
+              <div className={`field ${fieldErrors.birthTime ? 'has-error' : ''}`}>
+                <div className="field-label-row">
+                  <label htmlFor="birthTime">
+                    <span className="field-emoji" aria-hidden="true">
+                      ⏰
+                    </span>
+                    태어난 시간
+                  </label>
+                  <label className="time-unknown">
+                    <input
+                      type="checkbox"
+                      checked={birthTimeUnknown}
+                      onChange={(e) => {
+                        const checked = e.target.checked
+                        setBirthTimeUnknown(checked)
+                        if (checked) {
+                          setBirthTime('')
+                          if (fieldErrors.birthTime) {
+                            setFieldErrors((prev) => ({ ...prev, birthTime: false }))
+                          }
+                        }
+                      }}
+                      disabled={isLocked || busy}
+                    />
+                    시간 모름
+                  </label>
+                </div>
+                <input
+                  id="birthTime"
+                  type="time"
+                  value={birthTime}
+                  onChange={(e) => {
+                    setBirthTime(e.target.value)
+                    if (birthTimeUnknown) setBirthTimeUnknown(false)
+                    if (fieldErrors.birthTime) {
+                      setFieldErrors((prev) => ({ ...prev, birthTime: false }))
+                    }
+                  }}
+                  disabled={isLocked || busy || birthTimeUnknown}
+                />
+              </div>
 
               {error && (
                 <p className="error" role="alert">
@@ -801,7 +1249,11 @@ function App() {
                   </button>
                 </div>
               ) : (
-                <button type="submit" className="submit" disabled={busy}>
+                <button
+                  type="submit"
+                  className="submit"
+                  disabled={busy || (!user && !editMode)}
+                >
                   <span>{submitLabel}</span>
                   <span className="submit-arrow" aria-hidden="true">
                     →
@@ -818,9 +1270,7 @@ function App() {
                 loading ? 'is-streaming' : '',
                 saving ? 'is-saving' : '',
                 isSavedView ? 'is-saved' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
+              ].filter(Boolean).join(' ')}
               ref={resultRef}
               aria-labelledby="result-title"
               aria-busy={loading || readingLoading || saving}
@@ -831,9 +1281,13 @@ function App() {
                     {isSavedView ? 'SAVED FOR' : 'FOR'} {name || 'YOU'}
                   </p>
                   {isSavedView && !saving && (
-                    <span className="result-badge">{editMode ? '수정 중' : '저장됨'}</span>
+                    <span className="result-badge">
+                      {editMode ? '수정 중' : '저장됨'}
+                    </span>
                   )}
-                  {saving && <span className="result-badge is-saving">저장 중</span>}
+                  {saving && (
+                    <span className="result-badge is-saving">저장 중</span>
+                  )}
                 </div>
                 <h2 id="result-title">기본 차트 해석</h2>
                 {metaChips.length > 0 && (
@@ -850,7 +1304,9 @@ function App() {
                 )}
                 {saving && (
                   <p className="stream-status" aria-live="polite">
-                    {editMode ? '변경 사항을 저장하는 중…' : '해석을 저장하는 중…'}
+                    {editMode
+                      ? '변경 사항을 저장하는 중…'
+                      : '해석을 저장하는 중…'}
                   </p>
                 )}
                 {readingLoading && (
@@ -862,7 +1318,6 @@ function App() {
 
               <div className="result-body" key={resultRevealKey}>
                 {(loading || readingLoading) && !result && <ResultSkeleton />}
-
                 {result && (
                   <div className={`prose ${isSavedView ? 'is-reveal' : ''}`}>
                     <ReactMarkdown>{result}</ReactMarkdown>
@@ -887,8 +1342,20 @@ function App() {
                   {activeReadingId && (
                     <button
                       type="button"
+                      className="result-action"
+                      onClick={handleStartEdit}
+                      disabled={busy}
+                    >
+                      수정
+                    </button>
+                  )}
+                  {activeReadingId && (
+                    <button
+                      type="button"
                       className="result-action is-danger"
-                      onClick={() => handleDeleteReading(activeReadingId, name)}
+                      onClick={() =>
+                        handleDeleteReading(activeReadingId, name)
+                      }
                       disabled={busy}
                     >
                       삭제
@@ -930,4 +1397,3 @@ function App() {
 
 export default App
 
-//saju-me@260812
