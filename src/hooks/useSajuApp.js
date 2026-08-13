@@ -7,6 +7,11 @@ import { requireSupabase } from '../lib/supabase'
 import { OAUTH_PENDING_KEY } from '../utils/constants'
 import { formatBirthMeta } from '../utils/format'
 import {
+  clearPendingGuestReading,
+  readPendingGuestReading,
+  writePendingGuestReading,
+} from '../utils/pendingReading'
+import {
   composeBirthDate,
   emptyFormValues,
   PERSON_FIELDS_ERROR_MESSAGE,
@@ -18,22 +23,32 @@ import { useAuth } from './useAuth'
 import { useToast } from './useToast'
 
 export function useSajuApp() {
-  const [formValues, setFormValues] = useState(() => emptyFormValues())
+  const [formValues, setFormValues] = useState(
+    () => readPendingGuestReading()?.formValues ?? emptyFormValues(),
+  )
   const [userStateError, setError] = useState('')
   const { toast, showToast } = useToast()
-  const { user, authLoading, authBusy, handleGoogleSignIn, handleSignOut } =
-    useAuth({ setError, showToast })
+  const {
+    user,
+    authLoading,
+    authBusy,
+    handleGoogleSignIn: startGoogleOAuth,
+    handleSignOut,
+  } = useAuth({ setError, showToast })
 
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [profileModalMode, setProfileModalMode] = useState('create')
   const [loginModalOpen, setLoginModalOpen] = useState(false)
+  const [readingModalOpen, setReadingModalOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [readingLoading, setReadingLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
-  const [result, setResult] = useState('')
+  const [result, setResult] = useState(
+    () => readPendingGuestReading()?.result ?? '',
+  )
   const [fieldErrors, setFieldErrors] = useState({})
   const [readings, setReadings] = useState([])
   const [activeReadingId, setActiveReadingId] = useState(null)
@@ -52,6 +67,8 @@ export function useSajuApp() {
   const shareTimerRef = useRef(null)
   const snapshotRef = useRef(null)
   const prevUserIdRef = useRef(undefined)
+  const pendingSaveRef = useRef(false)
+  const persistPendingRef = useRef(async () => false)
 
   const birthDate = composeBirthDate(
     formValues.birthYear,
@@ -62,6 +79,7 @@ export function useSajuApp() {
   const needsProfile = Boolean(user) && !profile
   const isSavedView = Boolean(activeReadingId) && !loading && !saving
   const isLocked = isSavedView && !editMode
+  const isPreviewLocked = !user && Boolean(result)
   const showResultPanel = loading || readingLoading || Boolean(result)
   const metaChips = formatBirthMeta({
     birthDate,
@@ -120,6 +138,7 @@ export function useSajuApp() {
     snapshotRef.current = null
     setResultRevealKey((key) => key + 1)
     scrolledRef.current = false
+    clearPendingGuestReading()
 
     if (fillFromProfile && profileRow) {
       applyProfileToForm(profileRow)
@@ -129,7 +148,7 @@ export function useSajuApp() {
   }
 
   const loadProfile = async (currentUser = user) => {
-    if (!currentUser?.id) return
+    if (!currentUser?.id) return null
 
     try {
       const client = requireSupabase()
@@ -144,16 +163,23 @@ export function useSajuApp() {
 
       if (!data) {
         setProfile(null)
-        setProfileModalMode('create')
-        setProfileModalOpen(true)
-      } else {
-        setProfile(data)
-        applyProfileToForm(data)
-        setProfileModalOpen(false)
+        if (!readPendingGuestReading()?.result) {
+          setProfileModalMode('create')
+          setProfileModalOpen(true)
+        }
+        return null
       }
+
+      setProfile(data)
+      if (!readPendingGuestReading()?.result) {
+        applyProfileToForm(data)
+      }
+      setProfileModalOpen(false)
+      return data
     } catch (err) {
       console.error(err)
       setError(err.message || '프로필을 불러오지 못했습니다.')
+      return null
     } finally {
       setProfileLoading(false)
     }
@@ -174,9 +200,16 @@ export function useSajuApp() {
     if (saveError) throw saveError
 
     setProfile(data)
-    applyProfileToForm(data)
+    const pending = readPendingGuestReading()
+    if (pending?.result) {
+      setFormValues(pending.formValues)
+      setResult(pending.result)
+    } else {
+      applyProfileToForm(data)
+    }
     setProfileModalOpen(false)
     showToast('프로필이 저장되었어요')
+    await persistPendingRef.current()
   }
 
   const loadReadings = async () => {
@@ -214,6 +247,7 @@ export function useSajuApp() {
     prevUserIdRef.current = nextUserId
 
     if (!user) {
+      pendingSaveRef.current = false
       setReadings([])
       setHistoryLoading(false)
       setProfile(null)
@@ -231,6 +265,7 @@ export function useSajuApp() {
     ;(async () => {
       await loadProfile(user)
       await loadReadings()
+      await persistPendingRef.current()
     })()
 
     if (sessionStorage.getItem(OAUTH_PENDING_KEY) === '1') {
@@ -275,6 +310,42 @@ export function useSajuApp() {
     return data
   }
 
+  const persistPendingGuestReading = async () => {
+    const pending = readPendingGuestReading()
+    if (!pending?.result || pendingSaveRef.current) return false
+
+    pendingSaveRef.current = true
+    const fv = pending.formValues
+    const name = String(fv.name || '').trim()
+    const payload = {
+      name,
+      birth_date: composeBirthDate(fv.birthYear, fv.birthMonth, fv.birthDay),
+      birth_time: fv.birthTimeUnknown ? null : fv.birthTime || null,
+      gender: fv.gender,
+      calendar_type: fv.calendarType,
+      result: pending.result,
+    }
+
+    try {
+      setSaving(true)
+      setFormValues(fv)
+      setResult(pending.result)
+      await createReading(payload)
+      clearPendingGuestReading()
+      showToast(`${name}님 사주가 저장되었어요`)
+      return true
+    } catch (err) {
+      pendingSaveRef.current = false
+      console.error(err)
+      setError(err.message || '해석을 저장하지 못했습니다.')
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  persistPendingRef.current = persistPendingGuestReading
+
   const updateReading = async (readingId, payload) => {
     const client = requireSupabase()
     const { data, error: updateError } = await client
@@ -299,7 +370,6 @@ export function useSajuApp() {
     silent = false,
     source = 'unknown',
   } = {}) => {
-    if (requireLogin(source)) return
     if (!skipBusyCheck && busy) return
 
     setError('')
@@ -309,11 +379,12 @@ export function useSajuApp() {
     if (!silent) {
       trackEvent('new_reading', { source })
       showToast('새 사주 정보를 입력해 주세요')
+      setReadingModalOpen(true)
     }
 
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      document.getElementById('name')?.focus()
+      document.getElementById('reading-name')?.focus()
     })
   }
 
@@ -398,9 +469,10 @@ export function useSajuApp() {
     setEditMode(true)
     setError('')
     setFieldErrors({})
+    setReadingModalOpen(true)
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      document.getElementById('name')?.focus()
+      document.getElementById('reading-name')?.focus()
     })
   }
 
@@ -423,6 +495,7 @@ export function useSajuApp() {
     setEditMode(false)
     setFieldErrors({})
     setError('')
+    setReadingModalOpen(false)
   }
 
   const validateForm = () => {
@@ -448,17 +521,17 @@ export function useSajuApp() {
   })
 
   const handleSaveChanges = async () => {
-    if (!activeReadingId || busy) return
+    if (!activeReadingId || busy) return false
     setError('')
 
     if (!user) {
       setError('Google로 로그인한 뒤 저장할 수 있어요.')
-      return
+      return false
     }
 
     if (!validateForm()) {
       setError(PERSON_FIELDS_ERROR_MESSAGE)
-      return
+      return false
     }
 
     setSaving(true)
@@ -475,9 +548,11 @@ export function useSajuApp() {
       }
       trackEvent('save_reading')
       showToast(`${formValues.name.trim()}님 정보가 수정되었어요`)
+      return true
     } catch (err) {
       console.error(err)
       setError(err.message || '수정 중 오류가 발생했습니다.')
+      return false
     } finally {
       setSaving(false)
     }
@@ -512,12 +587,7 @@ export function useSajuApp() {
     setShareState('idle')
     scrolledRef.current = false
 
-    if (!user) {
-      setError('Google로 로그인한 뒤 사주를 해석·저장할 수 있어요.')
-      return
-    }
-
-    if (!profile) {
+    if (user && !profile) {
       setError('기본 정보를 먼저 등록해 주세요.')
       setProfileModalMode('create')
       setProfileModalOpen(true)
@@ -557,6 +627,15 @@ export function useSajuApp() {
       }
 
       setLoading(false)
+
+      if (!user) {
+        writePendingGuestReading({ formValues, result: text })
+        trackEvent('generate_reading', { guest: true })
+        showToast('로그인하면 나머지 해석을 볼 수 있어요')
+        setResultRevealKey((key) => key + 1)
+        return
+      }
+
       setSaving(true)
 
       const payload = buildPayload(text)
@@ -592,16 +671,38 @@ export function useSajuApp() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (requireLogin('submit')) return
     if (busy) return
 
     if (editMode && activeReadingId) {
-      await handleSaveChanges()
+      const saved = await handleSaveChanges()
+      if (saved) setReadingModalOpen(false)
       return
     }
 
     if (isLocked) return
+    if (!validateForm()) {
+      setError(PERSON_FIELDS_ERROR_MESSAGE)
+      return
+    }
+
     await runInterpretation()
+  }
+
+  const openReadingForm = () => {
+    setError('')
+    setReadingModalOpen(true)
+    requestAnimationFrame(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      document.getElementById('reading-name')?.focus()
+    })
+  }
+
+  const closeReadingForm = () => {
+    if (editMode) {
+      handleCancelEdit()
+      return
+    }
+    setReadingModalOpen(false)
   }
 
   const handleReinterpret = async () => {
@@ -609,8 +710,16 @@ export function useSajuApp() {
     await runInterpretation({ readingId: activeReadingId })
   }
 
+  const handleGoogleSignIn = async (source = 'unknown') => {
+    if (result) {
+      writePendingGuestReading({ formValues, result })
+    }
+    await startGoogleOAuth(source)
+  }
+
   const handleCopyResult = async () => {
     if (!result) return
+    if (requireLogin('copy_result')) return
     try {
       await navigator.clipboard.writeText(result)
       trackEvent('copy_result')
@@ -675,7 +784,7 @@ export function useSajuApp() {
         : '저장 중…'
       : editMode
         ? '변경 저장'
-        : '사주 보기'
+        : '너구리 보러 가기'
 
   return {
     user,
@@ -686,6 +795,7 @@ export function useSajuApp() {
     profileModalOpen,
     profileModalMode,
     loginModalOpen,
+    readingModalOpen,
     loading,
     saving,
     readingLoading,
@@ -707,6 +817,7 @@ export function useSajuApp() {
     needsProfile,
     isSavedView,
     isLocked,
+    isPreviewLocked,
     showResultPanel,
     metaChips,
     profileMetaChips,
@@ -725,6 +836,8 @@ export function useSajuApp() {
     handleCancelEdit,
     handleDeleteReading,
     handleSubmit,
+    openReadingForm,
+    closeReadingForm,
     handleReinterpret,
     handleCopyResult,
     handleShareResult,

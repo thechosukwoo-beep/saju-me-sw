@@ -1,20 +1,21 @@
 import ReactMarkdown from 'react-markdown'
-import ResultSkeleton from '../common/ResultSkeleton'
+import GoogleSignInButton from '../auth/GoogleSignInButton'
+import LoadingNuguri from './LoadingNuguri'
 import { shareButtonLabel } from '../../lib/share'
+import { getResultPreview, splitResultSummary } from '../../utils/resultPreview'
 
 export default function ResultPanel({
   resultRef,
   resultRevealKey,
-  name,
   result,
-  metaChips,
   loading,
   saving,
   readingLoading,
   isSavedView,
-  editMode,
   busy,
   user,
+  isPreviewLocked = false,
+  authBusy = false,
   activeReadingId,
   copyState,
   shareState,
@@ -23,8 +24,13 @@ export default function ResultPanel({
   onStartEdit,
   onDelete,
   onReinterpret,
-  onNewReading,
+  onSignIn,
 }) {
+  const displayResult = isPreviewLocked ? getResultPreview(result) : result
+  const { summary, body } = splitResultSummary(displayResult)
+  const showLock = isPreviewLocked && !loading && !readingLoading && Boolean(result)
+  const isWaiting = loading || readingLoading
+
   return (
     <section
       className={[
@@ -36,77 +42,58 @@ export default function ResultPanel({
         .filter(Boolean)
         .join(' ')}
       ref={resultRef}
-      aria-labelledby="result-title"
+      aria-label="사주 해석"
       aria-busy={loading || readingLoading || saving}
     >
-      <div className="result-head">
-        <div className="result-head-main">
-          <div className="result-head-row">
-            <p className="result-kicker">
-              {isSavedView ? 'SAVED FOR' : 'FOR'} {name || 'YOU'}
-            </p>
-            {isSavedView && !saving && (
-              <span className="result-badge">{editMode ? '수정 중' : '저장됨'}</span>
-            )}
-            {saving && <span className="result-badge is-saving">저장 중</span>}
-          </div>
-          <h2 id="result-title">기본 차트 해석</h2>
-          {metaChips.length > 0 && (
-            <ul className="result-meta" aria-label="입력 정보">
-              {metaChips.map((chip) => (
-                <li key={chip}>{chip}</li>
-              ))}
-            </ul>
-          )}
-          {loading && (
-            <p className="stream-status" aria-live="polite">
-              {result ? '실시간으로 작성 중…' : '명식을 준비하는 중…'}
-            </p>
-          )}
-          {saving && (
-            <p className="stream-status" aria-live="polite">
-              {editMode ? '변경 사항을 저장하는 중…' : '해석을 저장하는 중…'}
-            </p>
-          )}
-          {readingLoading && (
-            <p className="stream-status" aria-live="polite">
-              저장된 해석을 불러오는 중…
-            </p>
-          )}
-        </div>
-        <img
-          className={[
-            'result-mascot',
-            loading || readingLoading ? 'is-bounce' : '',
-          ]
-            .filter(Boolean)
-            .join(' ')}
-          src="/images/sub-sjrnfl.png"
-          alt="사주 결과를 전하는 너구리"
-          width={148}
-          height={148}
-          decoding="async"
-        />
-        <div className="result-mascot-bubble" aria-hidden="true">
-          {loading || readingLoading
-            ? '잠깐만, 사주 보는 중이구리…'
-            : '다 봤구리! 아래를 읽어보구리~'}
-        </div>
+      <div className="result-loader">
+        <LoadingNuguri />
+        {isWaiting && (
+          <p className="stream-status" aria-live="polite">
+            너구리 구경하구리~
+          </p>
+        )}
       </div>
 
-      <div className="result-body" key={resultRevealKey}>
-        {(loading || readingLoading) && !result && <ResultSkeleton />}
-        {result && (
+      <div
+        className={showLock ? 'result-body is-locked' : 'result-body'}
+        key={resultRevealKey}
+      >
+        {(summary || body) && (
           <div className={`prose ${isSavedView ? 'is-reveal' : ''}`}>
-            <ReactMarkdown>{result}</ReactMarkdown>
-            {loading && <span className="caret" aria-hidden="true" />}
+            {summary && (
+              <div className="result-summary">
+                <ReactMarkdown>{summary}</ReactMarkdown>
+              </div>
+            )}
+            {body && <ReactMarkdown>{body}</ReactMarkdown>}
+            {loading && !isPreviewLocked && (
+              <span className="caret" aria-hidden="true" />
+            )}
+          </div>
+        )}
+        {showLock && (
+          <div className="result-lock">
+            <div className="result-lock-ghost" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <p className="result-lock-copy">
+              밑의 자세한 해석은 Google로 로그인하면 볼 수 있구리.
+            </p>
+            <GoogleSignInButton
+              onClick={() => onSignIn?.('result_gate')}
+              disabled={authBusy || busy}
+            >
+              Google로 로그인하고 이어서 보기
+            </GoogleSignInButton>
           </div>
         )}
       </div>
 
       {result && !loading && !readingLoading && (
         <div className="result-actions">
-          {activeReadingId && (
+          {!isPreviewLocked && activeReadingId && (
             <button
               type="button"
               className="result-action is-primary"
@@ -116,19 +103,21 @@ export default function ResultPanel({
               {shareButtonLabel(shareState)}
             </button>
           )}
-          <button
-            type="button"
-            className="result-action"
-            data-ga-event="copy_result"
-            onClick={onCopy}
-          >
-            {copyState === 'copied'
-              ? '복사됨'
-              : copyState === 'failed'
-                ? '복사 실패'
-                : '결과 복사'}
-          </button>
-          {activeReadingId && (
+          {!isPreviewLocked && (
+            <button
+              type="button"
+              className="result-action"
+              data-ga-event="copy_result"
+              onClick={onCopy}
+            >
+              {copyState === 'copied'
+                ? '복사됨'
+                : copyState === 'failed'
+                  ? '복사 실패'
+                  : '결과 복사'}
+            </button>
+          )}
+          {!isPreviewLocked && activeReadingId && (
             <button
               type="button"
               className="result-action"
@@ -161,15 +150,6 @@ export default function ResultPanel({
               다시 해석
             </button>
           )}
-          <button
-            type="button"
-            className="result-action"
-            data-ga-event="new_reading"
-            onClick={onNewReading}
-            disabled={busy && Boolean(user)}
-          >
-            새 사주 만들기
-          </button>
         </div>
       )}
     </section>

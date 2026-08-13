@@ -13,7 +13,7 @@ export default function ShareHeader() {
         data-ga-event="share_cta_click"
         onClick={() => goHome('header_brand')}
       >
-        <span className="badge">SAJU ME</span>
+        <span className="badge">SAJU GURI</span>
         <span className="share-brand-name">사주미</span>
       </a>
       <a

@@ -14,108 +14,108 @@ function App() {
 
   return (
     <div className="layout">
-      <Sidebar
-        authLoading={app.authLoading}
-        user={app.user}
-        userLabel={app.userLabel}
-        userAvatar={app.userAvatar}
-        authBusy={app.authBusy}
-        profile={app.profile}
-        profileMetaChips={app.profileMetaChips}
-        profileLoading={app.profileLoading}
-        readings={app.readings}
-        historyLoading={app.historyLoading}
-        activeReadingId={app.activeReadingId}
-        busy={app.busy}
-        onSignIn={() => app.handleGoogleSignIn('sidebar')}
-        onSignOut={app.handleSignOut}
-        onEditProfile={() => {
-          trackEvent('edit_profile_open')
-          app.setProfileModalMode('edit')
-          app.setProfileModalOpen(true)
-        }}
-        onSelectReading={app.handleSelectReading}
-        onDeleteReading={(id, name) =>
-          app.handleDeleteReading(id, name, 'sidebar')
-        }
-        onNewReading={() => app.handleNewReading({ source: 'sidebar' })}
-      />
-
       <div className="page">
-        <Hero
+        <img
+          className="page-bg"
+          src="/images/minhwa-bg.svg"
+          alt=""
+          aria-hidden="true"
+        />
+        <Sidebar
           authLoading={app.authLoading}
           user={app.user}
+          userLabel={app.userLabel}
+          userAvatar={app.userAvatar}
           authBusy={app.authBusy}
-          onSignIn={() => app.handleGoogleSignIn('hero')}
+          profile={app.profile}
+          profileMetaChips={app.profileMetaChips}
+          profileLoading={app.profileLoading}
+          readings={app.readings}
+          historyLoading={app.historyLoading}
+          activeReadingId={app.activeReadingId}
+          busy={app.busy}
+          onSignIn={() => app.handleGoogleSignIn('sidebar')}
+          onSignOut={app.handleSignOut}
+          onEditProfile={() => {
+            trackEvent('edit_profile_open')
+            app.setProfileModalMode('edit')
+            app.setProfileModalOpen(true)
+          }}
+          onSelectReading={app.handleSelectReading}
+          onDeleteReading={(id, name) =>
+            app.handleDeleteReading(id, name, 'sidebar')
+          }
+          onNewReading={() => app.handleNewReading({ source: 'sidebar' })}
         />
 
-        <main className="main">
-          <ReadingPanel
-            formPulseKey={app.formPulseKey}
-            formRef={app.formRef}
-            monthRef={app.birthMonthRef}
-            dayRef={app.birthDayRef}
-            editMode={app.editMode}
-            isSavedView={app.isSavedView}
-            isLocked={app.isLocked}
-            busy={app.busy}
-            needsProfile={app.needsProfile}
-            user={app.user}
-            profile={app.profile}
-            formValues={app.formValues}
-            fieldErrors={app.fieldErrors}
-            error={app.error}
-            shareState={app.shareState}
-            submitLabel={app.submitLabel}
-            onNewReading={() => app.handleNewReading({ source: 'form' })}
-            onCancelEdit={app.handleCancelEdit}
-            onShare={() => app.handleShareResult('banner')}
-            onStartEdit={() => app.handleStartEdit('form')}
-            onDelete={() =>
-              app.handleDeleteReading(
-                app.activeReadingId,
-                app.formValues.name,
-                'banner',
-              )
-            }
-            onSubmit={app.handleSubmit}
-            onReinterpret={app.handleReinterpret}
-            onFieldChange={app.handleFieldChange}
-            onClearError={app.handleClearError}
-          />
+        <div className="page-main">
+          <Hero />
 
-          {app.showResultPanel && (
-            <ResultPanel
-              resultRef={app.resultRef}
-              resultRevealKey={app.resultRevealKey}
-              name={app.formValues.name}
-              result={app.result}
-              metaChips={app.metaChips}
-              loading={app.loading}
-              saving={app.saving}
-              readingLoading={app.readingLoading}
-              isSavedView={app.isSavedView}
+          <main className="main">
+            <ReadingPanel
+              formPulseKey={app.formPulseKey}
+              formRef={app.formRef}
               editMode={app.editMode}
+              isSavedView={app.isSavedView}
+              isLocked={app.isLocked}
+              formOpen={app.readingModalOpen}
               busy={app.busy}
-              user={app.user}
-              activeReadingId={app.activeReadingId}
-              copyState={app.copyState}
+              error={app.error}
               shareState={app.shareState}
-              onShare={() => app.handleShareResult('result')}
-              onCopy={app.handleCopyResult}
-              onStartEdit={() => app.handleStartEdit('result')}
+              formValues={app.formValues}
+              fieldErrors={app.fieldErrors}
+              submitLabel={app.submitLabel}
+              monthRef={app.birthMonthRef}
+              dayRef={app.birthDayRef}
+              onFieldChange={app.handleFieldChange}
+              onClearError={app.handleClearError}
+              onSubmit={app.handleSubmit}
+              onNewReading={() => app.handleNewReading({ source: 'form' })}
+              onCancelEdit={app.handleCancelEdit}
+              onShare={() => app.handleShareResult('banner')}
+              onStartEdit={() => app.handleStartEdit('form')}
               onDelete={() =>
                 app.handleDeleteReading(
                   app.activeReadingId,
                   app.formValues.name,
-                  'result',
+                  'banner',
                 )
               }
-              onReinterpret={app.handleReinterpret}
-              onNewReading={() => app.handleNewReading({ source: 'result' })}
+              onOpenForm={app.openReadingForm}
             />
-          )}
-        </main>
+
+            {app.showResultPanel && (
+              <ResultPanel
+                resultRef={app.resultRef}
+                resultRevealKey={app.resultRevealKey}
+                result={app.result}
+                loading={app.loading}
+                saving={app.saving}
+                readingLoading={app.readingLoading}
+                isSavedView={app.isSavedView}
+                busy={app.busy}
+                user={app.user}
+                isPreviewLocked={app.isPreviewLocked}
+                authBusy={app.authBusy}
+                activeReadingId={app.activeReadingId}
+                copyState={app.copyState}
+                shareState={app.shareState}
+                onShare={() => app.handleShareResult('result')}
+                onCopy={app.handleCopyResult}
+                onStartEdit={() => app.handleStartEdit('result')}
+                onDelete={() =>
+                  app.handleDeleteReading(
+                    app.activeReadingId,
+                    app.formValues.name,
+                    'result',
+                  )
+                }
+                onReinterpret={app.handleReinterpret}
+                onSignIn={app.handleGoogleSignIn}
+              />
+            )}
+          </main>
+        </div>
       </div>
 
       <LoginModal

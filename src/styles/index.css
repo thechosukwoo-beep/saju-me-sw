@@ -1,18 +1,43 @@
-:root {
-  --bg: #f6f7fb;
-  --surface: rgba(255, 255, 255, 0.72);
-  --ink: #0e1116;
-  --muted: #5c6574;
-  --line: rgba(14, 17, 22, 0.1);
-  --accent: #ff3b6b;
-  --accent-2: #ff8a3d;
-  --accent-soft: rgba(255, 59, 107, 0.12);
-  --ok: #0f9f6e;
-  --danger: #e11d48;
+@font-face {
+  font-family: "NexonMaplestory";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_20-04@2.1/MaplestoryOTFLight.woff")
+    format("woff");
+  font-weight: 300;
+  font-display: swap;
+}
 
-  --font-display: "Black Han Sans", "Noto Sans KR", sans-serif;
-  --font-latin: "Outfit", "Noto Sans KR", sans-serif;
-  --font-body: "Noto Sans KR", "Outfit", sans-serif;
+@font-face {
+  font-family: "NexonMaplestory";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_20-04@2.1/MaplestoryOTFLight.woff")
+    format("woff");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "NexonMaplestory";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_20-04@2.1/MaplestoryOTFBold.woff")
+    format("woff");
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  --bg: #1a2a44;
+  --surface: rgba(255, 251, 244, 0.32);
+  --ink: #0f3040;
+  --muted: #7a645c;
+  --line: rgba(15, 48, 64, 0.14);
+  --accent: #d1a58c;
+  --accent-2: #997a70;
+  --accent-soft: rgba(153, 122, 112, 0.14);
+  --on-accent: #0f3040;
+  --ok: #5f7d5c;
+  --danger: #c45c5c;
+
+  --font-display: "NexonMaplestory", sans-serif;
+  --font-latin: "NexonMaplestory", sans-serif;
+  --font-body: "NexonMaplestory", sans-serif;
 
   --radius: 18px;
   --radius-sm: 12px;
@@ -30,13 +55,31 @@ body,
   min-height: 100%;
 }
 
+#root {
+  position: relative;
+  z-index: 1;
+}
+
 body {
   margin: 0;
   color: var(--ink);
   font-family: var(--font-body);
   font-weight: 400;
-  background: var(--bg);
+  background-color: var(--bg);
   overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 540 900'%3E%3Cg fill='%23243552'%3E%3Crect x='42' y='36' width='48' height='8' rx='4'/%3E%3Crect x='230' y='72' width='32' height='7' rx='3.5'/%3E%3Crect x='410' y='40' width='40' height='8' rx='4'/%3E%3Crect x='88' y='168' width='28' height='6' rx='3'/%3E%3Crect x='310' y='196' width='44' height='8' rx='4'/%3E%3Crect x='470' y='148' width='30' height='7' rx='3.5'/%3E%3Crect x='160' y='300' width='36' height='7' rx='3.5'/%3E%3Crect x='380' y='332' width='26' height='6' rx='3'/%3E%3Crect x='36' y='420' width='34' height='7' rx='3.5'/%3E%3Crect x='250' y='460' width='42' height='8' rx='4'/%3E%3Crect x='440' y='500' width='24' height='6' rx='3'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: cover;
 }
 
 b,
@@ -47,64 +90,10 @@ h3,
 h4,
 h5,
 h6 {
-  font-weight: 400;
-}
-
-/* trendy mesh backdrop */
-body::before,
-body::after {
-  content: "";
-  position: fixed;
-  pointer-events: none;
-  z-index: 0;
-  border-radius: 50%;
-  filter: blur(60px);
-}
-
-body::before {
-  top: -12vh;
-  left: -10vw;
-  width: 55vw;
-  height: 55vw;
-  background: radial-gradient(circle, rgba(255, 59, 107, 0.28), transparent 68%);
-  animation: float-a 12s ease-in-out infinite alternate;
-}
-
-body::after {
-  right: -8vw;
-  bottom: -15vh;
-  width: 48vw;
-  height: 48vw;
-  background: radial-gradient(circle, rgba(255, 138, 61, 0.22), transparent 70%);
-  animation: float-b 14s ease-in-out infinite alternate;
+  font-weight: 700;
 }
 
 button,
 input {
   font: inherit;
-}
-
-@keyframes float-a {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  to {
-    transform: translate3d(4vw, 3vh, 0) scale(1.08);
-  }
-}
-
-@keyframes float-b {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  to {
-    transform: translate3d(-3vw, -4vh, 0) scale(1.1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body::before,
-  body::after {
-    animation: none;
-  }
 }

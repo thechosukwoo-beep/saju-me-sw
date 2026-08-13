@@ -1,8 +1,10 @@
 import ReactMarkdown from 'react-markdown'
 import { trackEvent } from '../../lib/analytics'
 import { shareButtonLabel } from '../../lib/share'
+import { splitResultSummary } from '../../utils/resultPreview'
 
 export default function SharedResult({ reading, metaChips, shareState, onShare }) {
+  const { summary, body } = splitResultSummary(reading.result)
   return (
     <section className="result is-saved" aria-labelledby="result-title">
       <div className="result-head">
@@ -35,7 +37,12 @@ export default function SharedResult({ reading, metaChips, shareState, onShare }
 
       <div className="result-body">
         <div className="prose is-reveal">
-          <ReactMarkdown>{reading.result}</ReactMarkdown>
+          {summary && (
+            <div className="result-summary">
+              <ReactMarkdown>{summary}</ReactMarkdown>
+            </div>
+          )}
+          <ReactMarkdown>{body || reading.result}</ReactMarkdown>
         </div>
       </div>
 

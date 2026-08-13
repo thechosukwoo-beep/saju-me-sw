@@ -22,7 +22,7 @@ export default function LoginModal({
           <p className="modal-kicker">LOGIN</p>
           <h2 id="login-modal-title">로그인이 필요해요</h2>
           <p className="modal-lede">
-            사주를 보거나 새로 만들려면 Google 계정으로 로그인해 주세요.
+            전체 해석을 보거나 기록을 남기려면 Google 계정으로 로그인해 주세요.
           </p>
         </div>
 
