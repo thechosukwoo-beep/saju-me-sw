@@ -1,8 +1,17 @@
 import { startTransition, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
+import LoginModal from './LoginModal'
+import ProfileModal from './ProfileModal'
+import {
+  composeBirthDate,
+  digitsOnly,
+  profileToFormValues,
+  splitBirthDate,
+} from './profileUtils'
 import { buildSajuPrompt } from './sajuPrompt'
 import { streamGemini } from './gemini'
+import { getShareUrl, shareButtonLabel, shareReading } from './share'
 import { isSupabaseConfigured, supabase } from './supabase'
 
 const SUPABASE_MISSING_MSG =
@@ -12,45 +21,6 @@ const OAUTH_PENDING_KEY = 'saju_oauth_pending'
 
 const GENDER_LABEL = { male: '남성', female: '여성' }
 const CALENDAR_LABEL = { solar: '양력', lunar: '음력' }
-
-function composeBirthDate(year, month, day) {
-  const y = String(year || '').trim()
-  const m = String(month || '').trim()
-  const d = String(day || '').trim()
-  if (y.length !== 4 || !m || !d) return ''
-
-  const mm = m.padStart(2, '0')
-  const dd = d.padStart(2, '0')
-  const composed = `${y}-${mm}-${dd}`
-  const date = new Date(`${composed}T00:00:00`)
-  if (
-    Number.isNaN(date.getTime()) ||
-    date.getFullYear() !== Number(y) ||
-    date.getMonth() + 1 !== Number(mm) ||
-    date.getDate() !== Number(dd)
-  ) {
-    return ''
-  }
-  return composed
-}
-
-function splitBirthDate(value) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return { year: '', month: '', day: '' }
-  }
-  const [year, month, day] = value.split('-')
-  return {
-    year,
-    month: String(Number(month)),
-    day: String(Number(day)),
-  }
-}
-
-function digitsOnly(value, maxLength) {
-  return String(value || '')
-    .replace(/\D/g, '')
-    .slice(0, maxLength)
-}
 
 function readOAuthErrorFromUrl() {
   const search = new URLSearchParams(window.location.search)
@@ -168,6 +138,11 @@ function App() {
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authBusy, setAuthBusy] = useState(false)
+  const [profile, setProfile] = useState(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileModalOpen, setProfileModalOpen] = useState(false)
+  const [profileModalMode, setProfileModalMode] = useState('create')
+  const [loginModalOpen, setLoginModalOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [readingLoading, setReadingLoading] = useState(false)
@@ -180,7 +155,9 @@ function App() {
   const [activeReadingId, setActiveReadingId] = useState(null)
   const [editMode, setEditMode] = useState(false)
   const [resultRevealKey, setResultRevealKey] = useState(0)
+  const [formPulseKey, setFormPulseKey] = useState(0)
   const [copyState, setCopyState] = useState('idle')
+  const [shareState, setShareState] = useState('idle')
 
   const resultRef = useRef(null)
   const formRef = useRef(null)
@@ -189,11 +166,13 @@ function App() {
   const scrolledRef = useRef(false)
   const toastTimerRef = useRef(null)
   const copyTimerRef = useRef(null)
+  const shareTimerRef = useRef(null)
   const snapshotRef = useRef(null)
   const prevUserIdRef = useRef(undefined)
 
   const birthDate = composeBirthDate(birthYear, birthMonth, birthDay)
   const busy = loading || saving || readingLoading || authBusy
+  const needsProfile = Boolean(user) && !profile
   const isSavedView = Boolean(activeReadingId) && !loading && !saving
   const isLocked = isSavedView && !editMode
   const showResultPanel = loading || readingLoading || Boolean(result)
@@ -204,7 +183,17 @@ function App() {
     gender,
     calendarType,
   })
+  const profileMetaChips = profile
+    ? formatBirthMeta({
+        birthDate: profile.birth_date,
+        birthTime: profile.birth_time,
+        birthTimeUnknown: !profile.birth_time,
+        gender: profile.gender,
+        calendarType: profile.calendar_type,
+      })
+    : []
   const userLabel =
+    profile?.name ||
     user?.user_metadata?.full_name ||
     user?.user_metadata?.name ||
     user?.email ||
@@ -243,15 +232,19 @@ function App() {
     setResult(data.result ?? '')
   }
 
-  const resetWorkspace = () => {
-    setName('')
-    setBirthYear('')
-    setBirthMonth('')
-    setBirthDay('')
-    setBirthTime('')
-    setBirthTimeUnknown(false)
-    setGender('male')
-    setCalendarType('solar')
+  const applyProfileToForm = (profileRow) => {
+    const values = profileToFormValues(profileRow)
+    setName(values.name)
+    setBirthYear(values.birthYear)
+    setBirthMonth(values.birthMonth)
+    setBirthDay(values.birthDay)
+    setBirthTime(values.birthTime)
+    setBirthTimeUnknown(values.birthTimeUnknown)
+    setGender(values.gender)
+    setCalendarType(values.calendarType)
+  }
+
+  const resetWorkspace = (profileRow = profile, { fillFromProfile = true } = {}) => {
     setLoading(false)
     setSaving(false)
     setReadingLoading(false)
@@ -260,9 +253,74 @@ function App() {
     setActiveReadingId(null)
     setEditMode(false)
     setCopyState('idle')
+    setShareState('idle')
     snapshotRef.current = null
     setResultRevealKey((key) => key + 1)
     scrolledRef.current = false
+
+    if (fillFromProfile && profileRow) {
+      applyProfileToForm(profileRow)
+    } else {
+      setName('')
+      setBirthYear('')
+      setBirthMonth('')
+      setBirthDay('')
+      setBirthTime('')
+      setBirthTimeUnknown(false)
+      setGender('male')
+      setCalendarType('solar')
+    }
+  }
+
+  const loadProfile = async (currentUser = user) => {
+    if (!currentUser?.id) return
+
+    try {
+      const client = requireSupabase()
+      setProfileLoading(true)
+      const { data, error: fetchError } = await client
+        .from('users')
+        .select('*')
+        .eq('id', currentUser.id)
+        .maybeSingle()
+
+      if (fetchError) throw fetchError
+
+      if (!data) {
+        setProfile(null)
+        setProfileModalMode('create')
+        setProfileModalOpen(true)
+      } else {
+        setProfile(data)
+        applyProfileToForm(data)
+        setProfileModalOpen(false)
+      }
+    } catch (err) {
+      console.error(err)
+      setError(err.message || '프로필을 불러오지 못했습니다.')
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  const saveProfile = async (payload) => {
+    if (!user?.id) {
+      throw new Error('로그인이 필요합니다.')
+    }
+
+    const client = requireSupabase()
+    const { data, error: saveError } = await client
+      .from('users')
+      .upsert({ id: user.id, ...payload }, { onConflict: 'id' })
+      .select('*')
+      .single()
+
+    if (saveError) throw saveError
+
+    setProfile(data)
+    applyProfileToForm(data)
+    setProfileModalOpen(false)
+    showToast('프로필이 저장되었어요')
   }
 
   const loadReadings = async () => {
@@ -342,6 +400,7 @@ function App() {
       subscription?.unsubscribe()
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+      if (shareTimerRef.current) clearTimeout(shareTimerRef.current)
     }
   }, [])
 
@@ -355,19 +414,34 @@ function App() {
     if (!user) {
       setReadings([])
       setHistoryLoading(false)
+      setProfile(null)
+      setProfileLoading(false)
+      setProfileModalOpen(false)
       if (prevUserId) {
-        resetWorkspace()
+        setLoginModalOpen(false)
+        resetWorkspace(null)
       }
       return
     }
 
-    loadReadings()
+    setLoginModalOpen(false)
+
+    ;(async () => {
+      await loadProfile(user)
+      await loadReadings()
+    })()
 
     if (sessionStorage.getItem(OAUTH_PENDING_KEY) === '1') {
       sessionStorage.removeItem(OAUTH_PENDING_KEY)
       showToast('Google 로그인 완료')
     }
   }, [user, authLoading])
+
+  const requireLogin = () => {
+    if (user) return false
+    setLoginModalOpen(true)
+    return true
+  }
 
   const handleGoogleSignIn = async () => {
     setError('')
@@ -467,15 +541,21 @@ function App() {
 
     setReadings((prev) => prev.filter((item) => item.id !== readingId))
     if (activeReadingId === readingId) {
-      handleNewReading({ skipBusyCheck: true })
+      handleNewReading({ skipBusyCheck: true, silent: true })
     }
   }
 
-  const handleNewReading = ({ skipBusyCheck = false } = {}) => {
+  const handleNewReading = ({ skipBusyCheck = false, silent = false } = {}) => {
+    if (requireLogin()) return
     if (!skipBusyCheck && busy) return
 
     setError('')
-    resetWorkspace()
+    setFormPulseKey((key) => key + 1)
+    resetWorkspace(null, { fillFromProfile: false })
+
+    if (!silent) {
+      showToast('새 사주 정보를 입력해 주세요')
+    }
 
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -495,6 +575,7 @@ function App() {
     setReadingLoading(true)
     setResult('')
     setCopyState('idle')
+    setShareState('idle')
     scrolledRef.current = false
 
     try {
@@ -646,10 +727,18 @@ function App() {
   const runInterpretation = async ({ readingId = null } = {}) => {
     setError('')
     setCopyState('idle')
+    setShareState('idle')
     scrolledRef.current = false
 
     if (!user) {
       setError('Google로 로그인한 뒤 사주를 해석·저장할 수 있어요.')
+      return
+    }
+
+    if (!profile) {
+      setError('기본 정보를 먼저 등록해 주세요.')
+      setProfileModalMode('create')
+      setProfileModalOpen(true)
       return
     }
 
@@ -718,6 +807,7 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (requireLogin()) return
     if (busy) return
 
     if (editMode && activeReadingId) {
@@ -746,6 +836,27 @@ function App() {
       setCopyState('failed')
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
       copyTimerRef.current = setTimeout(() => setCopyState('idle'), 1800)
+    }
+  }
+
+  const handleShareResult = async () => {
+    if (!activeReadingId || !result) return
+    try {
+      const outcome = await shareReading({
+        name,
+        url: getShareUrl(activeReadingId),
+      })
+      if (outcome === 'cancelled') return
+      setShareState(outcome)
+      if (outcome === 'copied') showToast('공유 링크를 복사했어요')
+      if (outcome === 'shared') showToast('공유했어요')
+      if (shareTimerRef.current) clearTimeout(shareTimerRef.current)
+      shareTimerRef.current = setTimeout(() => setShareState('idle'), 1800)
+    } catch (err) {
+      console.error(err)
+      setShareState('failed')
+      if (shareTimerRef.current) clearTimeout(shareTimerRef.current)
+      shareTimerRef.current = setTimeout(() => setShareState('idle'), 1800)
     }
   }
 
@@ -793,6 +904,31 @@ function App() {
               >
                 로그아웃
               </button>
+              {profile ? (
+                <div className="sidebar-profile">
+                  <p className="sidebar-profile-name">{profile.name}</p>
+                  {profileMetaChips.length > 0 ? (
+                    <ul className="sidebar-profile-meta" aria-label="프로필 정보">
+                      {profileMetaChips.map((chip) => (
+                        <li key={chip}>{chip}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="sidebar-profile-edit"
+                    onClick={() => {
+                      setProfileModalMode('edit')
+                      setProfileModalOpen(true)
+                    }}
+                    disabled={authBusy || profileLoading}
+                  >
+                    프로필 수정
+                  </button>
+                </div>
+              ) : (
+                <p className="sidebar-profile-note">기본 정보를 등록해 주세요</p>
+              )}
             </div>
           ) : (
             <div className="sidebar-auth-guest">
@@ -876,7 +1012,7 @@ function App() {
           type="button"
           className="sidebar-new"
           onClick={() => handleNewReading()}
-          disabled={busy || !user}
+          disabled={busy && Boolean(user)}
         >
           새 사주 만들기
         </button>
@@ -884,49 +1020,64 @@ function App() {
 
       <div className="page">
         <header className="hero">
-          <div className="hero-top">
-            <span className="badge">SAJU ME</span>
-            <span className="badge-dot" aria-hidden="true" />
-            {!authLoading && !user ? (
-              <button
-                type="button"
-                className="hero-signin"
-                onClick={handleGoogleSignIn}
-                disabled={authBusy || !isSupabaseConfigured}
-              >
-                Google 로그인
-              </button>
-            ) : null}
+          <div className="hero-copy">
+            <div className="hero-top">
+              <span className="badge">SAJU ME</span>
+              <span className="badge-dot" aria-hidden="true" />
+              {!authLoading && !user ? (
+                <button
+                  type="button"
+                  className="hero-signin"
+                  onClick={handleGoogleSignIn}
+                  disabled={authBusy || !isSupabaseConfigured}
+                >
+                  Google 로그인
+                </button>
+              ) : null}
+            </div>
+            <p className="brand">사주미</p>
+            <h1 className="headline">
+              오늘의 나를
+              <br />
+              <span className="headline-accent">더 선명하게</span>
+            </h1>
+            <p className="lede">
+              {user ? (
+                <>
+                  <span className="lede-line">
+                    생년월일만 넣으면, AI가 성격·기질·재능을
+                  </span>
+                  <br />
+                  바로 읽어드려요.
+                </>
+              ) : (
+                <>
+                  <span className="lede-line">
+                    Google로 로그인한 뒤, 생년월일만 넣으면 AI가 성격·기질·재능을
+                  </span>
+                  <br />
+                  읽어드려요.
+                </>
+              )}
+            </p>
           </div>
-          <p className="brand">사주미</p>
-          <h1 className="headline">
-            오늘의 나를
-            <br />
-            <span className="headline-accent">더 선명하게</span>
-          </h1>
-          <p className="lede">
-            {user ? (
-              <>
-                <span className="lede-line">
-                  생년월일만 넣으면, AI가 성격·기질·재능을
-                </span>
-                <br />
-                바로 읽어드려요.
-              </>
-            ) : (
-              <>
-                <span className="lede-line">
-                  Google로 로그인한 뒤, 생년월일만 넣으면 AI가 성격·기질·재능을
-                </span>
-                <br />
-                읽어드려요.
-              </>
-            )}
-          </p>
+          <img
+            className="hero-mascot"
+            src="/images/main-sjrnfl.png"
+            alt="사주미 마스코트 너구리"
+            width={220}
+            height={220}
+            decoding="async"
+          />
         </header>
 
         <main className="main">
-          <section className="panel" aria-labelledby="form-title" ref={formRef}>
+          <section
+            key={formPulseKey}
+            className={formPulseKey > 0 ? 'panel is-fresh' : 'panel'}
+            aria-labelledby="form-title"
+            ref={formRef}
+          >
             <div className="panel-head">
               <div className="panel-head-copy">
                 <h2 id="form-title">
@@ -938,20 +1089,20 @@ function App() {
                     : isSavedView
                       ? '저장된 사주를 보고 있어요. 수정·삭제·다시 해석이 가능해요.'
                       : user
-                        ? '기본 정보를 입력하면 해석이 시작돼요.'
+                        ? profile
+                          ? '프로필 정보로 바로 해석할 수 있어요. 필요하면 수정하세요.'
+                          : '기본 정보를 등록하면 해석이 시작돼요.'
                         : 'Google로 로그인하면 해석과 저장이 시작돼요.'}
                 </p>
               </div>
-              {(activeReadingId || result || name) && (
-                <button
-                  type="button"
-                  className="new-reading"
-                  onClick={() => handleNewReading()}
-                  disabled={busy}
-                >
-                  새 사주 만들기
-                </button>
-              )}
+              <button
+                type="button"
+                className="new-reading"
+                onClick={() => handleNewReading()}
+                disabled={busy && Boolean(user)}
+              >
+                새 사주 만들기
+              </button>
             </div>
 
             {isSavedView && (
@@ -978,6 +1129,14 @@ function App() {
                     </button>
                   ) : (
                     <>
+                      <button
+                        type="button"
+                        className="saved-banner-action is-ghost"
+                        onClick={handleShareResult}
+                        disabled={busy}
+                      >
+                        {shareButtonLabel(shareState)}
+                      </button>
                       <button
                         type="button"
                         className="saved-banner-action is-ghost"
@@ -1220,6 +1379,12 @@ function App() {
                 />
               </div>
 
+              {needsProfile && (
+                <p className="form-hint" role="status">
+                  프로필 등록이 필요해요. 기본 정보를 먼저 입력해 주세요.
+                </p>
+              )}
+
               {error && (
                 <p className="error" role="alert">
                   {error}
@@ -1240,7 +1405,7 @@ function App() {
                     type="button"
                     className="submit"
                     onClick={handleReinterpret}
-                    disabled={busy}
+                    disabled={busy || needsProfile}
                   >
                     <span>다시 해석하기</span>
                     <span className="submit-arrow" aria-hidden="true">
@@ -1252,7 +1417,7 @@ function App() {
                 <button
                   type="submit"
                   className="submit"
-                  disabled={busy || (!user && !editMode)}
+                  disabled={busy || (needsProfile && !editMode)}
                 >
                   <span>{submitLabel}</span>
                   <span className="submit-arrow" aria-hidden="true">
@@ -1276,44 +1441,64 @@ function App() {
               aria-busy={loading || readingLoading || saving}
             >
               <div className="result-head">
-                <div className="result-head-row">
-                  <p className="result-kicker">
-                    {isSavedView ? 'SAVED FOR' : 'FOR'} {name || 'YOU'}
-                  </p>
-                  {isSavedView && !saving && (
-                    <span className="result-badge">
-                      {editMode ? '수정 중' : '저장됨'}
-                    </span>
+                <div className="result-head-main">
+                  <div className="result-head-row">
+                    <p className="result-kicker">
+                      {isSavedView ? 'SAVED FOR' : 'FOR'} {name || 'YOU'}
+                    </p>
+                    {isSavedView && !saving && (
+                      <span className="result-badge">
+                        {editMode ? '수정 중' : '저장됨'}
+                      </span>
+                    )}
+                    {saving && (
+                      <span className="result-badge is-saving">저장 중</span>
+                    )}
+                  </div>
+                  <h2 id="result-title">기본 차트 해석</h2>
+                  {metaChips.length > 0 && (
+                    <ul className="result-meta" aria-label="입력 정보">
+                      {metaChips.map((chip) => (
+                        <li key={chip}>{chip}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {loading && (
+                    <p className="stream-status" aria-live="polite">
+                      {result ? '실시간으로 작성 중…' : '명식을 준비하는 중…'}
+                    </p>
                   )}
                   {saving && (
-                    <span className="result-badge is-saving">저장 중</span>
+                    <p className="stream-status" aria-live="polite">
+                      {editMode
+                        ? '변경 사항을 저장하는 중…'
+                        : '해석을 저장하는 중…'}
+                    </p>
+                  )}
+                  {readingLoading && (
+                    <p className="stream-status" aria-live="polite">
+                      저장된 해석을 불러오는 중…
+                    </p>
                   )}
                 </div>
-                <h2 id="result-title">기본 차트 해석</h2>
-                {metaChips.length > 0 && (
-                  <ul className="result-meta" aria-label="입력 정보">
-                    {metaChips.map((chip) => (
-                      <li key={chip}>{chip}</li>
-                    ))}
-                  </ul>
-                )}
-                {loading && (
-                  <p className="stream-status" aria-live="polite">
-                    {result ? '실시간으로 작성 중…' : '명식을 준비하는 중…'}
-                  </p>
-                )}
-                {saving && (
-                  <p className="stream-status" aria-live="polite">
-                    {editMode
-                      ? '변경 사항을 저장하는 중…'
-                      : '해석을 저장하는 중…'}
-                  </p>
-                )}
-                {readingLoading && (
-                  <p className="stream-status" aria-live="polite">
-                    저장된 해석을 불러오는 중…
-                  </p>
-                )}
+                <img
+                  className={[
+                    'result-mascot',
+                    loading || readingLoading ? 'is-bounce' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  src="/images/sub-sjrnfl.png"
+                  alt="사주 결과를 전하는 너구리"
+                  width={148}
+                  height={148}
+                  decoding="async"
+                />
+                <div className="result-mascot-bubble" aria-hidden="true">
+                  {loading || readingLoading
+                    ? '잠깐만, 사주 보는 중이구리…'
+                    : '다 봤구리! 아래를 읽어보구리~'}
+                </div>
               </div>
 
               <div className="result-body" key={resultRevealKey}>
@@ -1328,6 +1513,15 @@ function App() {
 
               {result && !loading && !readingLoading && (
                 <div className="result-actions">
+                  {activeReadingId && (
+                    <button
+                      type="button"
+                      className="result-action is-primary"
+                      onClick={handleShareResult}
+                    >
+                      {shareButtonLabel(shareState)}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="result-action"
@@ -1373,9 +1567,9 @@ function App() {
                   )}
                   <button
                     type="button"
-                    className="result-action is-primary"
+                    className="result-action"
                     onClick={() => handleNewReading()}
-                    disabled={busy}
+                    disabled={busy && Boolean(user)}
                   >
                     새 사주 만들기
                   </button>
@@ -1385,6 +1579,27 @@ function App() {
           )}
         </main>
       </div>
+
+      <LoginModal
+        open={loginModalOpen}
+        busy={authBusy}
+        disabled={!isSupabaseConfigured}
+        onSignIn={handleGoogleSignIn}
+        onClose={() => setLoginModalOpen(false)}
+      />
+
+      <ProfileModal
+        open={profileModalOpen}
+        mode={profileModalMode}
+        initial={profile}
+        busy={authBusy || profileLoading}
+        onSave={saveProfile}
+        onClose={
+          profileModalMode === 'edit'
+            ? () => setProfileModalOpen(false)
+            : null
+        }
+      />
 
       {toast && (
         <div className="toast" role="status" aria-live="polite">
