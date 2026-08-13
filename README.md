@@ -3,7 +3,7 @@
 생년월일만 넣으면 AI가 성격·기질·재능을 읽어 주는 사주 해석 서비스입니다.  
 마스코트 너구리가 T형처럼 결론부터, 말투만 귀엽게 해석합니다.
 
-**서비스:** [https://saju-me-sw.vercel.app](https://saju-me-sw.vercel.app)
+**서비스:** [https://sajuguri.netlify.app/](https://sajuguri.netlify.app/)
 
 ## 주요 기능
 
