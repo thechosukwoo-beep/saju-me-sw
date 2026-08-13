@@ -1,3 +1,5 @@
+import GoogleSignInButton from './GoogleSignInButton'
+
 export default function LoginModal({
   open,
   busy = false,
@@ -8,11 +10,7 @@ export default function LoginModal({
   if (!open) return null
 
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onClick={onClose}
-    >
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
         className="modal-card login-modal-card"
         role="dialog"
@@ -28,17 +26,7 @@ export default function LoginModal({
           </p>
         </div>
 
-        <button
-          type="button"
-          className="google-signin"
-          onClick={onSignIn}
-          disabled={busy || disabled}
-        >
-          <span className="google-signin-icon" aria-hidden="true">
-            G
-          </span>
-          Google로 계속하기
-        </button>
+        <GoogleSignInButton onClick={onSignIn} disabled={busy || disabled} />
 
         <button
           type="button"

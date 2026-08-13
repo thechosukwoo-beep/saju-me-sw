@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { SUPABASE_MISSING_MSG } from '../utils/constants'
 
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim()
 const supabasePublishableKey = (
@@ -19,3 +20,10 @@ export const supabase = isSupabaseConfigured
       },
     })
   : null
+
+export function requireSupabase() {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error(SUPABASE_MISSING_MSG)
+  }
+  return supabase
+}

@@ -64,3 +64,27 @@ export function profileToFormValues(profile) {
     calendarType: profile.calendar_type ?? 'solar',
   }
 }
+
+export function emptyFormValues() {
+  return profileToFormValues(null)
+}
+
+export function validatePersonFields({
+  name,
+  gender,
+  birthDate,
+  birthTime,
+  birthTimeUnknown,
+  calendarType,
+}) {
+  return {
+    name: !name.trim(),
+    gender: !gender,
+    birthDate: !birthDate,
+    birthTime: !birthTimeUnknown && !birthTime,
+    calendarType: !calendarType,
+  }
+}
+
+export const PERSON_FIELDS_ERROR_MESSAGE =
+  '이름, 성별, 생년월일, 태어난 시간(또는 시간 모름), 달력을 모두 입력해 주세요.'
